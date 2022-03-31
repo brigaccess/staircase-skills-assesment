@@ -1,0 +1,214 @@
+openapi: "3.0.1"
+info:
+  title: "Staircase Recognition API"
+  version: "1.0"
+  description: This API allows you to recognize and label objects on static images (called blobs).
+servers:
+- url: "https://px5764ykx6.execute-api.us-east-1.amazonaws.com/"
+  description: Staging server.
+components:
+  schemas:
+    LabelBoundingBox:
+      type: object
+      description: >
+        Bounding box of the recognized object. Note: all values are ratios of respective image sides and can be negative.
+      properties:
+        Width: 
+          type: number
+          format: float
+          description: Width of the bounding box
+          example: 0.6665681004524231
+        Height: 
+          type: number
+          format: float
+          description: Height of the bounding box
+          example: 0.4535948932170868
+        Left:
+          type: number
+          format: float
+          description: Horizontal offset of the bounding box from image left side
+          example: 0.1534070372581482
+        Top:
+          type: number
+          format: float
+          description: Vertical offset of the bounding box from image top side
+          example: 0.32661816477775574
+    LabelInstance:
+      type: object
+      description: Information about single instance of recognized object
+      properties:
+        BoundingBox:
+          $ref: '#/components/schemas/LabelBoundingBox'
+        Confidence:
+          type: number
+          format: float
+          description: Level of recognition model confidence for instance
+          example: 99.98123168945312
+    LabelParent:
+      type: object
+      description: Contains information about parent labels
+      properties:
+        Name:
+          type: string
+          description: Name of the parent label
+          example: Vehicle
+    LabelInfo:
+      type: object
+      description: Information about recognized object
+      properties:
+        Name:
+          type: string
+          description: Detected object/scene class
+          example: Car
+        Confidence:
+          type: number
+          format: float
+          description: Level of recognition model confidence
+          example: 99.98123168945312
+        Instances:
+          type: array
+          description: Instances of the label detected in the image
+          items:
+            $ref: '#/components/schemas/LabelInstance'
+        Parents:
+          type: array
+          description: Parent labels for a detected label.
+          items:
+            $ref: '#/components/schemas/LabelParent'
+    S3UploadUrlInfo:
+      type: object
+      description: >
+        Object containing S3 url and fields that should be sent alongside the file.
+
+        To upload a file, you'll need to send a `multipart/form-data` encoded POST request to the provided URL. The request body should include all fields from `fields` object, as well as the file itself in `file` field.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: S3 url to send file to
+        fields:
+          type: object
+          additionalProperties: true
+          description: Fields that should be sent with the file
+    CreateBlobRequestError:
+      type: object
+      description: Blob creation error information.
+      properties:
+        error:
+          type: string
+          description: Error message.
+          example: This endpoint accepts application/json only.
+    CreateBlobRequest:
+      type: object
+      description: Blob creation request body.
+      properties:
+        callback_url:
+          type: string
+          description: URL to POST recognition details to. Only `http` and `https` schemas are supported.
+          pattern: 'https?://\s+'
+          example: https://example.com/callback
+        allow_insecure_callback:
+          type: boolean
+          description: When `true`, SSL errors (e.g. self-signed certificate validation error) will be ignored when calling back.
+          default: false
+    CreateBlobResponse:
+      type: object
+      description: Blob creation response body.
+      properties:
+        blob_id:
+          type: string
+          format: uuid
+          description: ID that the uploaded blob will have.
+        upload_info:
+          $ref: '#/components/schemas/S3UploadUrlInfo'
+      required:
+        - blob_id
+        - upload_info
+    RecognitionStatus:
+        type: string
+        description: >
+          Status of blob recognition task.
+        enum:
+          - AWAITING_UPLOAD
+          - SUCCESSFUL_RECOGNITION
+          - FAILED_RECOGNITION
+          - SUCCESSFUL_CACHED
+          - FAILED_CACHED
+    BlobInfo:
+      type: object
+      description: Blob information object.
+      properties:
+        blob_id:
+          type: string
+          format: uuid
+          description: Blod unique identifier.
+          example: cb157735-3335-4fe1-ad50-0f09c0c068c6
+        status:
+          $ref: '#/components/schemas/RecognitionStatus'
+        result:
+          type: array
+          description: Array of recognized labels.
+          items:
+            $ref: '#/components/schemas/LabelInfo'
+        error:
+          type: string
+          description: Recognition error information in HTTP-status-like format, where numeric codes are valid HTTP response codes.
+          pattern: \d{3} .*
+          example: 415 Invalid image format
+        callback_error:
+          type: string
+          description: Information about error that occured when calling back.
+          example: Failed to connect to the callback_url server
+      required:
+        - blob_id
+        - status
+
+paths:
+  /blobs:
+    post:
+      summary: Create recognition task.
+      description: >
+        Generates a recognition task and returns a URL to upload your image to. The task status can be fetched by calling `/blobs/{blobId}`. Optionally, you can provide a callback URL that will be called once recognition task completes.
+
+        Currently, the API supports JPEG and PNG images up to 15 MB in size. For more details on uploading files, see documentation on `upload_info` response field.
+      requestBody:
+        description: Optional information about callback endpoint.
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBlobRequest'
+      responses:
+        '200':
+          description: Generated recognition task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBlobResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBlobRequestError'
+  /blobs/{blobId}:
+    get:
+      summary: Get recognition task details.
+      description: This endpoint returns the recognition task status and result. If recognition task was created with `callback_url` and the callback failed, the response will contain details about the failure.
+      parameters:
+        - name: "blobId"
+          in: "path"
+          description: ID of the blob to get information about.
+          required: true
+          schema:
+            type: "string"
+            example: cb157735-3335-4fe1-ad50-0f09c0c068c6
+      responses:
+        '200':
+          description: Recognition task details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobInfo'
+        '404': 
+          description: Not found

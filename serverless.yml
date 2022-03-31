@@ -1,0 +1,141 @@
+service: staircase-rekognition
+frameworkVersion: '3'
+
+package:
+  exclude:
+    - .vscode/**
+    - node_modules/**
+    - package.json
+    - package-lock.json
+    - tests/**
+    - docs/**
+
+provider:
+  name: aws
+  runtime: python3.8
+  architecture: arm64
+  memorySize: 128
+  environment:
+    # AWS resource names
+    DD_RECOGNITION_TASKS_TABLE: recognition_tasks
+    DD_RECOGNITION_CACHE_TABLE: recognition_cache
+    S3_RECOGNITION_BUCKET: aws-st4sh-recognition
+    # AWS limits
+    REKOGNITION_API_MAX_FILE_SIZE: 15000000
+    # App settings
+    RECOGNITION_CACHE_LIFETIME: 86400
+    RECOGNITION_USER_AGENT: staircase-recognition/1.0
+    RECOGNITION_CALLBACK_TIMEOUT: 5
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+          Resource: 
+            - Fn::GetAtt: [ RecognitionTasksTable, Arn ]
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+          Resource: 
+            - Fn::GetAtt: [ RecognitionCacheTable, Arn ]
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource:
+            - Fn::Join:
+              - ''
+              - - Fn::GetAtt: [ RecognitionBucket, Arn ]
+                - '*'
+        - Effect: Allow
+          Action:
+            - rekognition:DetectLabels
+          Resource:
+            - '*'
+
+resources:
+  Resources:
+    RecognitionTasksTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DD_RECOGNITION_TASKS_TABLE}
+        KeySchema:
+          - AttributeName: blobId
+            KeyType: HASH
+        AttributeDefinitions:
+          - AttributeName: blobId
+            AttributeType: S
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
+
+    RecognitionCacheTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DD_RECOGNITION_CACHE_TABLE}
+        KeySchema:
+          - AttributeName: etag
+            KeyType: HASH
+        AttributeDefinitions:
+          - AttributeName: etag
+            AttributeType: S
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+    RecognitionBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.S3_RECOGNITION_BUCKET}
+
+functions:
+  createBlob:
+    description: Processes and saves file upload request to the DB, retrurns S3 presigned URL
+    handler: recognition.create_blob
+    events:
+      - httpApi:
+          path: /blobs
+          method: post
+
+  processBlob:
+    description: Triggers the recognition process when a new file is uploaded to the S3 bucket
+    handler: recognition.process_blob
+    events:
+      - s3:
+          bucket: ${self:provider.environment.S3_RECOGNITION_BUCKET}
+          event: s3:ObjectCreated:*
+          existing: true
+
+  makeCallback:
+    description: Calls back to the caller-provided URL with the result
+    handler: recognition.make_callback
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt:
+              - RecognitionTasksTable
+              - StreamArn
+          filterPatterns:
+            - eventName: [MODIFY]
+              dynamodb:
+                NewImage:
+                  callback_error:
+                    S: 
+                      - exists: false
+
+  fetchBlobInfo:
+    description: Returns the blob information by ID
+    handler: recognition.fetch_blob_info
+    events:
+      - httpApi:
+          path: /blobs/{blobId}
+          method: get
