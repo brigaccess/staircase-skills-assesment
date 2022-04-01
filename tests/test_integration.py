@@ -1,52 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import json
-import os.path
-import pathlib
 
 import pytest
 import requests
 
-# TODO Fetch this dynamically
-root_url = "https://px5764ykx6.execute-api.us-east-1.amazonaws.com"
+from integration_utils import case_file_path, get_url, analyze_image
 
-def get_url(path: str) -> str:
-    if not path.startswith("/"):
-        path = "/" + path
-    return root_url + path
-
-def create_blob() -> tuple[str, str]:
-    result = requests.post(get_url("/blobs")).json()
-    return result['blob_id'], result['upload_info']
-
-def get_blob_info(blob_id: str) -> dict:
-    return requests.get(get_url("/blobs/{}".format(blob_id))).json()
-
-def send_blob(filepath: str) -> dict:
-    blob_id, upload_info = create_blob()
-
-    with open(filepath, 'rb') as f:
-        result = requests.post(upload_info['url'], data=upload_info['fields'], files={
-            "file": f
-        })
-        if result.status_code != 204:
-            raise RuntimeError("Wrong response code")
-
-    started_at = datetime.now()
-
-    timeout = timedelta(seconds=30)
-    while datetime.now() - started_at < timeout:
-        blob_info = get_blob_info(blob_id)
-        if blob_info['status'] != 'AWAITING_UPLOAD':
-            return blob_info
-    raise TimeoutError()
-
-def case_file_path(filename: str) -> str:
-    return os.path.join(pathlib.Path(__file__).parent.absolute(), 'cases', filename)
 
 def success(filename: str) -> None:
-    result = send_blob(case_file_path(filename))
+    _, result = analyze_image(case_file_path(filename))
     assert result['status'].startswith('SUCCESSFUL')
     assert 'error' not in result
 
@@ -72,7 +35,7 @@ def test_success_5():
 
 @pytest.mark.integration
 def test_invalid_file_type():
-    result = send_blob(case_file_path('random_blob.txt'))
+    _, result = analyze_image(case_file_path('random_blob.txt'))
     assert result['status'].startswith('FAILED')
     assert 'error' in result
     assert result['error'].startswith('415')
